@@ -1,0 +1,6 @@
+[project]
+name = "codex-bridge-mcp"
+version = "0.1.0"
+description = "Claude Desktop/Cowork에서 로컬 Codex CLI에 작업·이미지 생성을 위임하는 MCP 서버"
+requires-python = ">=3.10"
+dependencies = ["mcp>=1.2.0,<2"]

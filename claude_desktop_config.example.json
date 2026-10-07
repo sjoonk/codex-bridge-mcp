@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "codex-bridge": {
+      "command": "/Users/YOU/codex-bridge-mcp/.venv/bin/python",
+      "args": ["/Users/YOU/codex-bridge-mcp/server.py"],
+      "env": {
+        "CODEX_BIN": "/opt/homebrew/bin/codex",
+        "CODEX_BRIDGE_WORKSPACE": "/Users/YOU/codex-bridge-workspace",
+        "CODEX_BRIDGE_ALLOWED_ROOTS": "/Users/YOU/codex-bridge-workspace:/Users/YOU/Projects",
+        "CODEX_BRIDGE_IMAGE_BACKEND": "codex",
+        "CODEX_TIMEOUT": "1800"
+      }
+    }
+  }
+}
