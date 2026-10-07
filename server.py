@@ -4,6 +4,8 @@ Claude Desktop / Cowork에서 로컬 Codex CLI에 작업과 이미지 생성을 
 """
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import os
 import shutil
@@ -22,11 +24,12 @@ TIMEOUT = int(os.environ.get("CODEX_TIMEOUT", "1800"))
 WORKSPACE = Path(
     os.environ.get("CODEX_BRIDGE_WORKSPACE", "~/codex-bridge-workspace")
 ).expanduser().resolve()
-ALLOWED_ROOTS = [
+# 작업 폴더는 항상 허용 (기본 cwd/out_dir이 여기라서)
+ALLOWED_ROOTS = list(dict.fromkeys([WORKSPACE] + [
     Path(p).expanduser().resolve()
-    for p in os.environ.get("CODEX_BRIDGE_ALLOWED_ROOTS", str(WORKSPACE)).split(os.pathsep)
+    for p in os.environ.get("CODEX_BRIDGE_ALLOWED_ROOTS", "").split(os.pathsep)
     if p.strip()
-]
+]))
 # codex(내장 $imagegen) | gpt-image-2(gpt-image-bridge) | codex-image
 IMAGE_BACKEND = os.environ.get("CODEX_BRIDGE_IMAGE_BACKEND", "codex")
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
@@ -70,7 +73,7 @@ def _codex_exec(prompt: str, cwd: Path, allow_write: bool) -> tuple[int, str, st
         CODEX_BIN, "exec", "--skip-git-repo-check",
         "--sandbox", "workspace-write" if allow_write else "read-only",
         "--output-last-message", str(out),
-        prompt,
+        "--", prompt,  # '-'로 시작하는 프롬프트가 옵션으로 해석되지 않게
     ]
     code, _stdout, stderr = _run(cmd, cwd)
     msg = out.read_text(encoding="utf-8").strip() if out.exists() else ""
@@ -98,8 +101,17 @@ def _find_new_image(dirs: list[Path], since: float) -> Path | None:
     return max(found, key=lambda f: f.stat().st_mtime) if found else None
 
 
+def _threaded(fn):
+    """동기 툴을 스레드에서 실행해 장시간 작업 중에도 서버 이벤트 루프가 막히지 않게 한다."""
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        return await asyncio.to_thread(fn, *args, **kwargs)
+    return wrapper
+
+
 # ── MCP 툴 ────────────────────────────────────────────────────────────
 @mcp.tool()
+@_threaded
 def bridge_status() -> str:
     """브리지 설정과 Codex 설치·로그인 상태를 확인한다. 처음 쓸 때나 오류가 날 때 호출."""
     _, ver, ver_err = _run([CODEX_BIN, "--version"], Path.home())
@@ -116,6 +128,7 @@ def bridge_status() -> str:
 
 
 @mcp.tool()
+@_threaded
 def codex_run(prompt: str, cwd: str | None = None, allow_write: bool = False) -> str:
     """Codex(GPT)에게 작업을 맡기고 최종 응답을 받는다.
 
@@ -133,6 +146,7 @@ def codex_run(prompt: str, cwd: str | None = None, allow_write: bool = False) ->
 
 
 @mcp.tool()
+@_threaded
 def codex_image(
     prompt: str,
     filename: str = "image.png",
@@ -155,7 +169,7 @@ def codex_image(
     log = ""
 
     if IMAGE_BACKEND == "gpt-image-2":
-        code, out, err = _run(["gpt-image-2", prompt, str(dest), "--size", size], dest_dir)
+        code, out, err = _run(["gpt-image-2", "--size", size, "--", prompt, str(dest)], dest_dir)
         log = out + err
     elif IMAGE_BACKEND == "codex-image":
         code, out, err = _run(["codex-image", "generate", prompt, "--out", str(dest_dir)], dest_dir)
@@ -171,13 +185,16 @@ def codex_image(
         code, out, err = _codex_exec(instruction, dest_dir, allow_write=True)
         log = out + "\n" + err
 
+    def is_fresh() -> bool:  # 이전 실행에서 남은 같은 이름 파일은 성공으로 치지 않는다
+        return dest.exists() and dest.stat().st_mtime >= start
+
     # 지정 파일명으로 저장되지 않은 경우: 새로 생긴 이미지를 찾아 옮긴다
-    if not dest.exists():
+    if not is_fresh():
         new = _find_new_image([dest_dir, CODEX_HOME], start)
-        if new:
+        if new and new != dest:
             shutil.copy2(new, dest)
 
-    if dest.exists():
+    if is_fresh():
         return json.dumps(
             {"path": str(dest), "bytes": dest.stat().st_size, "backend": IMAGE_BACKEND},
             ensure_ascii=False,
